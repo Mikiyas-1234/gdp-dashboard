@@ -1,151 +1,75 @@
+# Import necessary libraries
+import os
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+from PIL import Image
+from dotenv import load_dotenv  # Use dotenv to load environment variables
+import google.generativeai as genai
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Load all the environment variables from the .env file
+load_dotenv()
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Configure the generative AI client with the provided API key
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    st.error("GOOGLE_API_KEY is missing. Please check your .env file or environment variables.")
+else:
+    genai.configure(api_key)
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def get_gemini_response(input_text, image, prompt):
+    """Generates a response from the Gemini model based on the input and image."""
+    try:
+        # Use generative model for processing input and image
+        response = genai.generate_text(prompt=prompt, input=image)
+        return response.text  # Get the text response
+    except Exception as e:
+        st.error(f"An error occurred while generating the response: {str(e)}")  # Error handling
+        return None
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+def input_image_details(uploaded_file):
+    """Returns image details from the uploaded file."""
+    if uploaded_file is not None:
+        # Read the file into bytes
+        bytes_data = uploaded_file.getvalue()
+        image_parts = [
+            {
+                "mime_type": uploaded_file.type,  # Get the mime type of the uploaded file
+                "data": bytes_data
+            }
+        ]
+        return image_parts
+    else:
+        raise FileNotFoundError("File not found")  # Raise an error if no file is uploaded
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Initialize our Streamlit app
+st.set_page_config(page_title="MultiLanguage Text Extractor")
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+st.header("MultiLanguage Text Extractor")
+input_text = st.text_input("Input prompt:", key="input")
+uploaded_file = st.file_uploader("Choose an image of the extracted text...", type=["jpg", "jpeg", "png"], key="image")
+image = None
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+submit = st.button("Tell me about the extracted text")
 
-    return gdp_df
+# Define a prompt for the generative AI model
+input_prompt = """
+You are an expert in understanding text in images. We will upload an image of the text, and you will tell us about the text in the image.
+The text can be in any language.
+"""
 
-gdp_df = get_gdp_data()
+# If the submit button is clicked
+if submit:
+    try:
+        image_data = input_image_details(uploaded_file)
+        response = get_gemini_response(input_text, image_data, input_prompt)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+        st.subheader("The Response is:")
+        if response:
+            st.write(response)
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+            st.error("No response was generated. Please try again.")
+    except FileNotFoundError as e:
+        st.error(str(e))  # Display error messages on the Streamlit app
